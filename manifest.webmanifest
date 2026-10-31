@@ -1,0 +1,18 @@
+{
+  "name": "v0 · 인천시청역 교통약자 안내",
+  "short_name": "v0",
+  "description": "인천시청역 엘리베이터 상태, 고장일 때 돌아가는 길, 휠체어 승차, 역무원 도움 요청 (시범)",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "id": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B1016",
+  "theme_color": "#0B1016",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
