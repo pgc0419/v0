@@ -1,5 +1,5 @@
 /* v0 서비스 워커: 앱을 폰에 저장해서 지하에서도 열리게 한다. */
-const CACHE = "v0-incheon-2026-10-31-1";
+const CACHE = "v0-incheon-2026-10-31-2";
 const ASSETS = ["./", "./index.html", "./app.js", "./station.js", "./manifest.webmanifest", "./vendor/jsQR.js", "./vendor/qrcode.js",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/maskable-512.png", "./icons/apple-touch-icon.png"];
 self.addEventListener("install", e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())));

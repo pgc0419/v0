@@ -201,8 +201,6 @@ VIEWS.home = () => {
   const anyEx = shown.some(f => statusOf(f.id).ex);
   const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
   return `
-  <div class="notice-box"><p><b>시범 페이지 v0</b> · ${esc(ST.team.replace(/ 팀$/, " 팀"))}이 만든 시험용 안내입니다. 인천교통공사 공식 서비스가 아니며, 일부 정보는 현장조사(10월 31일) 후 채웁니다.</p>
-    <div class="tags">${tag("site")}${tag("confirm")}${tag("todo")}${tag("ex")}</div></div>
   <div class="panel"><div class="panel-head"><h2 class="sec-title">오늘의 엘리베이터</h2>${anyEx ? `<span class="flag">예시 상태 · 실제 운행 아님</span>` : ""}</div>
     <ul class="evs">${shown.map(f => evRow(f, { tags: false, note: false })).join("")}</ul>
     <button class="linkish muted" type="button" data-go="elevator" style="margin-top:6px">엘리베이터 ${evs.length}대 모두 보기</button></div>
