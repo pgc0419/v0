@@ -28,11 +28,12 @@ const IC = {
   okc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 3 5-6"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.01"/></svg>',
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>',
+  star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg>'
 };
 
 /* ---------- 저장 ---------- */
-const S = { spot: ST.defaultSpot, fromQR: false, scale: 0, favs: new Set(), log: {}, exCleared: false, alerts: [], feedback: [], mode: "wheel", dest: null, openDetour: null, install: null };
+const S = { spot: ST.defaultSpot, fromQR: false, scale: 0, favs: new Set(), log: {}, exCleared: false, alerts: [], feedback: [], mode: "wheel", dest: null, openDetour: null, install: null, favRoutes: [], openFav: null };
 function load() {
   try {
     const d = JSON.parse(localStorage.getItem(KEY) || "{}");
@@ -43,11 +44,12 @@ function load() {
     S.exCleared = !!d.exCleared;
     if (Array.isArray(d.alerts)) S.alerts = d.alerts.slice(0, 30);
     if (Array.isArray(d.feedback)) S.feedback = d.feedback.slice(0, 100);
+    if (Array.isArray(d.favRoutes)) S.favRoutes = d.favRoutes.filter(r => r && P(r.from) && P(r.to) && MODES[r.mode]);
     if (["wheel", "nostairs", "all"].includes(d.mode)) S.mode = d.mode;
   } catch (e) { }
 }
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify({ spot: S.spot, fromQR: S.fromQR, scale: S.scale, favs: [...S.favs], log: S.log, exCleared: S.exCleared, alerts: S.alerts, feedback: S.feedback, mode: S.mode })); } catch (e) { }
+  try { localStorage.setItem(KEY, JSON.stringify({ spot: S.spot, fromQR: S.fromQR, scale: S.scale, favs: [...S.favs], log: S.log, exCleared: S.exCleared, alerts: S.alerts, feedback: S.feedback, mode: S.mode, favRoutes: S.favRoutes })); } catch (e) { }
 }
 
 /* ---------- 상태 ---------- */
@@ -93,10 +95,10 @@ function evRow(f, opts = {}) {
 /* ---------- 길 찾기 ---------- */
 const MODES = { wheel: { label: "휠체어·유모차", allow: ["ev"] }, nostairs: { label: "계단 없이", allow: ["ev", "es"] }, all: { label: "빠른 길", allow: ["ev", "es", "st"] } };
 const COST = { ev: 3, es: 2, st: 2 };
-function edges(mode, skip = new Set()) {
+function edges(mode, skip = new Set(), ignoreOut = false) {
   const out = [];
   for (const f of ST.facilities) {
-    if (!MODES[mode].allow.includes(f.type) || skip.has(f.id) || isOut(f.id)) continue;
+    if (!MODES[mode].allow.includes(f.type) || skip.has(f.id) || (!ignoreOut && isOut(f.id))) continue;
     const s = statusOf(f.id);
     const w = COST[f.type] + (s.state === "unknown" ? 0.4 : 0) + (f.src === "ex" || f.src === "todo" ? 0.3 : 0);
     for (const [a, b, dir] of f.links) {
@@ -106,10 +108,10 @@ function edges(mode, skip = new Set()) {
   }
   return out;
 }
-function findPath(from, to, mode, skip) {
+function findPath(from, to, mode, skip, ignoreOut) {
   const targets = new Set(Array.isArray(to) ? to : [to]);
   if (targets.has(from)) return { steps: [], cost: 0 };
-  const E = edges(mode, skip), dist = { [from]: 0 }, prev = {}, done = new Set();
+  const E = edges(mode, skip, ignoreOut), dist = { [from]: 0 }, prev = {}, done = new Set();
   while (true) {
     let u = null, best = Infinity;
     for (const k in dist) if (!done.has(k) && dist[k] < best) { best = dist[k]; u = k; }
@@ -118,6 +120,28 @@ function findPath(from, to, mode, skip) {
     done.add(u);
     for (const e of E) if (e.a === u) { const nd = best + e.w; if (nd < (dist[e.b] ?? Infinity)) { dist[e.b] = nd; prev[e.b] = e; } }
   }
+}
+/* 출발·도착이 출구면, 그 출구로 못 갈 때 다른 출구로 들어가거나 나가는 길까지 찾는다 */
+function planRoute(from, to, mode, ignoreOut) {
+  let p = findPath(from, to, mode, undefined, ignoreOut);
+  if (p) return { p, start: from };
+  const exits = ST.exits.map(e => "X" + e.no);
+  if (P(to).exit) {
+    const q = findPath(from, exits.filter(x => x !== to), mode, undefined, ignoreOut);
+    if (q) return { p: q, start: from, altExit: q.end };
+  }
+  if (P(from).exit) {
+    let best = null, via = null;
+    for (const x of exits) { if (x === from) continue; const q = findPath(x, to, mode, undefined, ignoreOut); if (q && (!best || q.cost < best.cost)) { best = q; via = x; } }
+    if (best) return { p: best, start: via, via };
+  }
+  return { p: null, start: from };
+}
+function planNotes(plan, from, to, mode) {
+  let h = "";
+  if (plan.via) h += `<div class="alert warn" style="margin-bottom:8px">${IC.warn}<div class="grow">${esc(P(from).name)}에서는 ${esc(MODES[mode].label)}${ro(MODES[mode].label)} 들어갈 수 없어요. 지상에서 <b>${esc(P(plan.via).name)}</b>${ro(P(plan.via).name)} 가서 들어가세요.</div></div>`;
+  if (plan.altExit) h += `<div class="alert warn" style="margin-bottom:8px">${IC.warn}<div class="grow">${esc(P(to).name)}${ro(P(to).name)}는 지금 ${esc(MODES[mode].label)}${ro(MODES[mode].label)} 나갈 수 없어요. <b>${esc(P(plan.altExit).name)}</b>${ro(P(plan.altExit).name)} 나가세요.</div></div>`;
+  return h;
 }
 function verb(a, b) { const d = FLOOR_IDX[P(b).floor] - FLOOR_IDX[P(a).floor]; return d > 0 ? "내려가기" : d < 0 ? "올라가기" : "이동"; }
 const jong = w => { const c = String(w).charCodeAt(String(w).length - 1); return c >= 0xAC00 && c <= 0xD7A3 ? (c - 0xAC00) % 28 : 0; };
@@ -166,7 +190,7 @@ function renderBanner() {
   b.className = "banner" + (up ? " up" : "");
   b.setAttribute("role", "alert");
   b.innerHTML = `<div class="banner-ico">${up ? IC.okc : IC.warn}</div><div style="min-width:0"><div class="banner-title">${esc(top.title)}</div><div class="muted">${esc(top.sub || "")}</div></div>
-    <div class="banner-actions">${up ? "" : `<button class="btn sm warn" type="button" data-detour="${top.id}">돌아가는 길 보기</button>`}<button class="btn sm" type="button" data-dismiss="${esc(top.key)}">확인</button></div>`;
+    <div class="banner-actions">${up ? "" : top.fav ? `<button class="btn sm warn" type="button" data-fav-open="${esc(top.fav)}">우회 경로 보기</button>` : `<button class="btn sm warn" type="button" data-detour="${top.id}">돌아가는 길 보기</button>`}<button class="btn sm" type="button" data-dismiss="${esc(top.key)}">확인</button></div>`;
 }
 
 const VIEWS = {};
@@ -182,6 +206,7 @@ VIEWS.home = () => {
   <div class="panel"><div class="panel-head"><h2 class="sec-title">오늘의 엘리베이터</h2>${anyEx ? `<span class="flag">예시 상태 · 실제 운행 아님</span>` : ""}</div>
     <ul class="evs">${shown.map(f => evRow(f, { tags: false, note: false })).join("")}</ul>
     <button class="linkish muted" type="button" data-go="elevator" style="margin-top:6px">엘리베이터 ${evs.length}대 모두 보기</button></div>
+  ${favHub()}
   <button class="hub" type="button" data-go="elevator"><span class="ico">${IC.ev}</span><span><span class="hub-title">엘리베이터를 쓸 수 있나요?</span><div class="hub-sub">운행 상태 · 고장일 때 돌아가는 길</div></span><span class="chev">›</span></button>
   <button class="hub" type="button" data-go="wheelchair"><span class="ico">${IC.wheel}</span><span><span class="hub-title">휠체어로 열차 타기</span><div class="hub-sub">안전발판 · 휠체어 전용공간 위치</div></span><span class="chev">›</span></button>
   <button class="hub help" type="button" data-go="help"><span class="ico">${IC.phone}</span><span><span class="hub-title">역무원 도움 요청</span><div class="hub-sub">역무실 바로 전화 · 승하차 동행</div></span><span class="chev">›</span></button>
@@ -301,20 +326,19 @@ VIEWS.route = () => {
     }).join("")}</div>`;
   }
   if (S.dest && S.dest !== from) {
-    let p = findPath(from, S.dest, S.mode), via = null;
-    if (!p && P(from).exit) {
-      // 이 출구로는 못 들어가면 다른 출구로 들어가는 길
-      for (const ex of ST.exits) { const xid = "X" + ex.no; if (xid === from) continue; const q = findPath(xid, S.dest, S.mode); if (q && (!p || q.cost < p.cost)) { p = q; via = xid; } }
-    }
+    const plan = planRoute(from, S.dest, S.mode), p = plan.p;
+    const saved = S.favRoutes.some(r => r.from === from && r.to === S.dest && r.mode === S.mode);
     const outs = ST.facilities.filter(f => isOut(f.id) && MODES[S.mode].allow.includes(f.type));
     h += `<div class="panel" id="routeResult"><div class="panel-head"><h3>${esc(placeLabel(S.dest))}까지</h3><span class="flag">${MODES[S.mode].label}</span></div>`;
     if (outs.length) h += `<div class="alert warn" style="margin-bottom:8px">${IC.info}<div class="grow">멈춘 ${outs.map(f => esc(f.name)).join(", ")}${outs.length > 1 ? "는" : (jong(outs[0].name) ? "은" : "는")} 빼고 안내해요.</div></div>`;
     if (p) {
-      if (via) h += `<div class="alert warn" style="margin-bottom:8px">${IC.warn}<div class="grow">${esc(P(from).name)}에서는 ${esc(MODES[S.mode].label)}${ro(MODES[S.mode].label)} 들어갈 수 없어요. 지상에서 <b>${esc(P(via).name)}</b>${ro(P(via).name)} 가서 들어가세요.</div></div>`;
-      h += stepsHTML(via || from, p);
+      h += planNotes(plan, from, S.dest, S.mode);
+      h += stepsHTML(plan.start, p);
       const tg = ST.transferGuide.rows.find(r => r.from === from && r.to === S.dest);
       if (tg) h += `<div class="detour"><div class="detour-title">공사 환승 안내 ${tag(ST.transferGuide.src)}</div><p>내릴 칸 <b class="mono">${esc(tg.off)}</b> → 탈 칸 <b class="mono">${esc(tg.on)}</b> · 약 ${ST.transferGuide.minutes}분</p><p class="muted">${esc(tg.walk)}</p>${tg.warn ? `<p style="color:var(--warn)">${esc(tg.warn)}</p>` : ""}</div>`;
       if (p.steps.some(e => e.f.src === "todo" || e.f.src === "ex")) h += `<p class="muted" style="margin-top:8px;font-size:.9rem">‘현장 확인 예정’·‘예시’ 표시가 있는 시설은 아직 현장에서 확인하지 않았어요.</p>`;
+      h += `<div style="margin-top:12px"><button class="btn ${saved ? "" : "warn"}" type="button" data-save-route aria-pressed="${saved}">${IC.star}${saved ? "즐겨찾는 길에 저장됨" : "자주 다니는 길로 저장"}</button></div>
+        ${saved ? "" : `<p class="muted" style="margin-top:6px;font-size:.9rem">저장하면 이 길의 엘리베이터가 고장 났을 때 알림과 함께 돌아가는 길을 알려드려요.</p>`}`;
     } else {
       h += `<div class="alert bad">${IC.warn}<div class="grow"><b>${MODES[S.mode].label}${ro(MODES[S.mode].label)} 갈 수 있는 길이 없어요.</b> 엘리베이터가 멈췄거나 아직 확인되지 않은 구간이에요. 역무원 도움을 요청하세요.</div></div>
         <div style="margin-top:10px"><button class="btn" type="button" data-go="help">${IC.phone}역무원 도움 요청</button></div>`;
@@ -323,6 +347,92 @@ VIEWS.route = () => {
   }
   return h;
 };
+
+/* ---------- 즐겨찾는 길 ---------- */
+function routeName(r) {
+  const sp = ST.spots.find(x => x.place === r.from);
+  return `${sp ? sp.label : P(r.from).name} → ${P(r.to).name}`;
+}
+function routeState(r) {
+  const brokenIds = r.base.filter(id => isOut(id));
+  return { broken: brokenIds.map(id => FAC[id]), plan: brokenIds.length ? planRoute(r.from, r.to, r.mode) : null };
+}
+function favHub() {
+  const n = S.favRoutes.length, bad = S.favRoutes.filter(r => routeState(r).broken.length).length;
+  const sub = !n ? "자주 다니는 길을 저장하면 고장 날 때 알려드려요" : bad ? `${bad}개 길에 고장 · 돌아가는 길 안내` : `${n}개 길 · 모두 평소대로 갈 수 있어요`;
+  return `<button class="hub${bad ? " help" : ""}" type="button" data-go="fav"><span class="ico">${IC.star}</span><span><span class="hub-title">즐겨찾는 길</span><div class="hub-sub">${esc(sub)}</div></span><span class="chev">›</span></button>`;
+}
+/* 데모로 고장 낼 엘리베이터: 출구와 이어진 것을 먼저 고른다 (다른 출구로 나가는 안내가 잘 보이게) */
+const demoEv = r => r.base.find(id => FAC[id].type === "ev" && FAC[id].links.some(l => P(l[0]).exit || P(l[1]).exit)) || r.base.find(id => FAC[id].type === "ev");
+function addFavRoute(from, to, mode) {
+  if (S.favRoutes.some(r => r.from === from && r.to === to && r.mode === mode)) return;
+  const base = planRoute(from, to, mode, true); // 고장이 없을 때 평소에 다니는 길
+  if (!base.p) { toast("이 길은 엘리베이터로 이어지지 않아서 저장할 수 없어요"); return; }
+  S.favRoutes.unshift({ id: Date.now().toString(36), from, to, mode, base: [...new Set(base.p.steps.map(e => e.f.id))], at: Date.now() });
+  save();
+  if ("Notification" in window && Notification.permission === "default") { try { Notification.requestPermission(); } catch (e) { } }
+}
+VIEWS.fav = () => {
+  let h = `${backBtn()}<h2 class="page-title">즐겨찾는 길</h2>
+    <p class="lede">자주 다니는 길에 있는 엘리베이터가 고장 나면 알림이 오고, 다른 길로 안내해요. 시범 버전이라 역무원 입력은 이 폰에서만 반영돼요.</p>`;
+  if (!S.favRoutes.length) {
+    return h + `<div class="panel" style="display:grid;gap:10px"><h3>아직 저장한 길이 없어요</h3>
+      <p class="muted">이동 경로에서 길을 고른 뒤 <b>자주 다니는 길로 저장</b>을 누르세요.</p>
+      <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn warn" type="button" data-fav-example>예시 길로 체험하기</button><button class="btn" type="button" data-go="route">이동 경로 열기</button></div>
+      <p class="muted" style="font-size:.9rem">예시: 2호선 석바위시장 방면 승강장에서 8번 출구로 나가는 길 (휠체어·유모차)</p></div>`;
+  }
+  for (const r of S.favRoutes) {
+    const { broken, plan } = routeState(r), open = S.openFav === r.id || broken.length > 0;
+    const base = planRoute(r.from, r.to, r.mode, true);
+    h += `<div class="panel" style="display:grid;gap:10px">
+      <div class="panel-head" style="margin:0"><div style="min-width:0"><div class="row-title">${IC.star.replace("<svg", '<svg style="width:1.1rem;height:1.1rem;color:var(--warn)"')}${esc(routeName(r))}</div><div class="row-sub">${esc(MODES[r.mode].label)} · 엘리베이터 ${r.base.filter(id => FAC[id].type === "ev").length}곳 지나감</div></div>
+        <span class="st ${broken.length ? "out" : "ok"}">${broken.length ? "고장 있음" : "평소대로"}</span></div>`;
+    if (broken.length) {
+      h += `<div class="alert bad">${IC.warn}<div class="grow"><b>${broken.map(f => esc(f.name)).join(", ")}</b> 사용 불가${broken[0] && statusOf(broken[0].id).eta ? ` · 복구 예정 ${esc(statusOf(broken[0].id).eta)}` : ""}. 아래 길로 돌아가세요.</div></div>`;
+      if (plan && plan.p) h += `<div class="detour"><div class="detour-title">이렇게 돌아가세요</div>${planNotes(plan, r.from, r.to, r.mode)}${stepsHTML(plan.start, plan.p)}</div>`;
+      else h += `<div class="detour"><div class="alert bad">${IC.warn}<div class="grow"><b>엘리베이터로 돌아갈 길이 없어요.</b> 역무원 도움을 요청하세요.</div></div><div><button class="btn sm" type="button" data-go="help">${IC.phone}역무원 도움 요청</button></div></div>`;
+    } else {
+      h += `<button class="linkish muted" type="button" data-open-fav="${r.id}">${open ? "평소 길 접기" : "평소 길 보기"}</button>`;
+      if (open && base.p) h += stepsHTML(base.start, base.p);
+    }
+    const firstEv = demoEv(r);
+    h += `<div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${broken.length ? `<button class="btn sm" type="button" data-fav-fix="${r.id}">데모: 고장 되돌리기</button>` : firstEv ? `<button class="btn sm warn" type="button" data-fav-break="${r.id}">데모: ${esc(FAC[firstEv].name)} 고장 내기</button>` : ""}
+      <button class="btn sm" type="button" data-fav-del="${r.id}">삭제</button></div></div>`;
+  }
+  return h;
+};
+/* 상태가 바뀌면 그 엘리베이터를 지나는 즐겨찾는 길마다 알림 */
+function routeAlerts(f, prevState, entry) {
+  let hit = false;
+  if ((prevState === "out") === (entry.state === "out")) return false;
+  for (const r of S.favRoutes) {
+    if (!r.base.includes(f.id)) continue;
+    hit = true;
+    const out = entry.state === "out";
+    let sub = routeName(r);
+    if (out) {
+      const plan = planRoute(r.from, r.to, r.mode);
+      sub = plan.p ? (plan.altExit ? `${P(plan.altExit).name}${ro(P(plan.altExit).name)} 나가세요` : plan.via ? `${P(plan.via).name}${ro(P(plan.via).name)} 들어가세요` : "다른 엘리베이터로 돌아가는 길이 있어요") : "돌아갈 길이 없어요. 역무원 도움을 요청하세요";
+      sub = `${routeName(r)} · ${sub}`;
+    }
+    const a = { key: Date.now().toString(36) + r.id, id: f.id, fav: r.id, state: entry.state, t: Date.now(), read: false,
+      title: out ? `자주 다니는 길의 ${f.name}${iga(f.name)} 고장 났어요` : `자주 다니는 길의 ${f.name}${iga(f.name)} 다시 운행해요`, sub };
+    S.alerts.unshift(a);
+    notify(`인천시청역 · ${a.title}`, a.sub, "#fav");
+  }
+  S.alerts = S.alerts.slice(0, 30);
+  if (hit) { try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch (e) { } }
+  return hit;
+}
+function setStatusDemo(id, state) {
+  const prev = statusOf(id).state, f = FAC[id];
+  const eta = new Date(Date.now() + 2 * 3600000);
+  const entry = { state, at: Date.now(), by: "데모", eta: state === "out" ? `${String(eta.getHours()).padStart(2, "0")}:${String(eta.getMinutes()).padStart(2, "0")}` : "", memo: state === "out" ? "데모로 낸 고장이에요" : "" };
+  S.log[id] = entry;
+  if (!routeAlerts(f, prev, entry) && S.favs.has(id) && prev !== state) pushAlert(f, entry);
+  save();
+}
 
 VIEWS.facility = () => `${backBtn()}<h2 class="page-title">역 편의시설</h2>
   <p class="lede">인천교통공사 누리집에 나온 시설이에요. 정확한 층과 위치는 현장조사 후 채워요.</p>
@@ -389,11 +499,11 @@ function pushAlert(f, s) {
   notify(`인천시청역 · ${a.title}`, a.sub);
   try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch (e) { }
 }
-async function notify(title, body) {
+async function notify(title, body, hash = "#elevator") {
   try {
     if (!("Notification" in window) || Notification.permission !== "granted") return;
     const reg = await navigator.serviceWorker?.getRegistration();
-    const o = { body, icon: "icons/icon-192.png", badge: "icons/icon-192.png", tag: "v0-" + Date.now(), data: { hash: "#elevator" } };
+    const o = { body, icon: "icons/icon-192.png", badge: "icons/icon-192.png", tag: "v0-" + Date.now(), data: { hash } };
     if (reg) await reg.showNotification(title, o); else new Notification(title, o);
   } catch (e) { }
 }
@@ -513,6 +623,17 @@ document.addEventListener("click", async e => {
     toast(on ? "고장 나면 알려드릴게요" : "알림을 껐어요"); render(); return;
   }
   if (d.toggleDetour) { S.openDetour = S.openDetour === d.toggleDetour ? "" : d.toggleDetour; render(); return; }
+  if ("saveRoute" in d) {
+    const from = SPOT[S.spot].place;
+    if (S.favRoutes.some(r => r.from === from && r.to === S.dest && r.mode === S.mode)) { go("fav"); return; }
+    addFavRoute(from, S.dest, S.mode); toast("★ 자주 다니는 길로 저장했어요. 고장 나면 알려드릴게요"); render(); return;
+  }
+  if ("favExample" in d) { addFavRoute("P2S", "X8", "wheel"); S.openFav = S.favRoutes[0]?.id; toast("예시 길을 저장했어요. ‘고장 내기’를 눌러 보세요"); render(); return; }
+  if (d.favBreak) { const r = S.favRoutes.find(x => x.id === d.favBreak); const id = r && demoEv(r); if (id) { setStatusDemo(id, "out"); toast(`${FAC[id].name}에 고장을 냈어요`); render(); window.scrollTo({ top: 0, behavior: "smooth" }); } return; }
+  if (d.favFix) { const r = S.favRoutes.find(x => x.id === d.favFix); r && r.base.filter(i => isOut(i)).forEach(i => setStatusDemo(i, "ok")); toast("고장을 되돌렸어요"); render(); return; }
+  if (d.favDel) { S.favRoutes = S.favRoutes.filter(x => x.id !== d.favDel); save(); render(); return; }
+  if (d.openFav) { S.openFav = S.openFav === d.openFav ? null : d.openFav; render(); return; }
+  if (d.favOpen) { S.alerts.forEach(a => { if (a.fav === d.favOpen) a.read = true; }); S.openFav = d.favOpen; save(); go("fav"); return; }
   if (d.detour) { S.alerts.forEach(a => { if (a.id === d.detour) a.read = true; }); S.openDetour = d.detour; save(); go("elevator"); return; }
   if (d.dismiss) { const a = S.alerts.find(x => x.key === d.dismiss); if (a) a.read = true; save(); renderBanner(); return; }
   if (d.mode) { S.mode = d.mode; save(); render(); return; }
@@ -533,7 +654,7 @@ document.addEventListener("click", async e => {
     const prev = statusOf(id).state;
     const entry = { state, at: Date.now(), by: box.querySelector("[data-by]").value, eta: state === "out" ? box.querySelector("[data-eta]").value : "", memo: box.querySelector("[data-memo]").value.trim() };
     S.log[id] = entry;
-    if (S.favs.has(id) && prev !== state) pushAlert(f, entry);
+    if (!routeAlerts(f, prev, entry) && S.favs.has(id) && prev !== state) pushAlert(f, entry);
     save(); toast(`${f.name} · ${STATE[state]} 저장했어요`); render(); return;
   }
   if ("clearEx" in d) { S.exCleared = true; save(); toast("예시 상태를 지웠어요"); render(); return; }
