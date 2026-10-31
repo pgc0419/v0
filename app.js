@@ -678,5 +678,12 @@ footer();
 fromHash();
 setInterval(() => { if (document.visibilityState === "visible" && (view === "home" || view === "elevator")) render(); }, 60000);
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost") && !EMBED) {
-  navigator.serviceWorker.register("sw.js").catch(() => { });
+  // 새 버전이 올라오면 앱을 열 때 바로 받아서 한 번 새로고침한다
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => {
+    reg.update().catch(() => { });
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reg.update().catch(() => { }); });
+  }).catch(() => { });
 }
